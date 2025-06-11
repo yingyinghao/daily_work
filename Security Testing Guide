@@ -1,0 +1,261 @@
+
+
+This guide will help you thoroughly test the security implementation to ensure all measures are working correctly.
+
+## Quick Start
+
+### 1. Run Automated Tests
+
+```bash
+# Navigate to backend directory
+cd backend
+
+# Make sure dependencies are installed
+poetry install
+
+# Run all security tests
+python test_security.py
+
+# Or run specific test types
+python test_security.py auth        # OAuth security tests
+python test_security.py rate       # Rate limiting tests  
+python test_security.py middleware # Security middleware tests
+python test_security.py quick      # Quick validation tests
+```
+
+### 2. Start the Development Server
+
+```bash
+# In backend directory
+cd django
+python manage.py runserver
+```
+
+## Manual Testing Scenarios
+
+### 🔐 **Google OAuth Email Spoofing Prevention**
+
+#### Test 1: Personal Email Blocking
+1. **Setup**: Create a test Google OAuth app or use browser dev tools
+2. **Action**: Try to authenticate with personal emails:
+   - `test@gmail.com`
+   - `user@yahoo.com`
+   - `someone@hotmail.com`
+3. **Expected Result**: ❌ Should be rejected with "Personal email providers are not allowed"
+
+#### Test 2: Non-Google Workspace Domain
+1. **Action**: Try to authenticate with a business email from a domain that doesn't use Google Workspace
+2. **Expected Result**: ❌ Should be rejected with "Only Google Workspace accounts are allowed"
+
+#### Test 3: Valid Google Workspace User
+1. **Action**: Authenticate with a valid Google Workspace email
+2. **Expected Result**: ✅ Should succeed and return access/refresh tokens
+
+### ⚡ **Rate Limiting Tests**
+
+#### Test 4: Google Auth Rate Limiting
+```bash
+# Use curl or a script to test rate limiting
+for i in {1..12}; do
+  curl -X POST http://localhost:8000/api/auth/google/ \
+    -H "Content-Type: application/json" \
+    -d '{"credential": "fake_token"}' \
+    -w "Request $i: Status %{http_code}\n"
+done
+```
+**Expected**: First 10 requests get 400 (bad token), 11th+ get 429 (rate limited)
+
+#### Test 5: Token Refresh Rate Limiting
+```bash
+# Test token refresh endpoint
+for i in {1..22}; do
+  curl -X POST http://localhost:8000/api/token/refresh/ \
+    -H "Content-Type: application/json" \
+    -d '{"refresh_token": "invalid"}' \
+    -w "Request $i: Status %{http_code}\n"
+done
+```
+**Expected**: First 20 requests get 401 (invalid token), 21st+ get 429 (rate limited)
+
+### 🛡️ **Endpoint Authentication Tests**
+
+#### Test 6: Protected Endpoints Without Auth
+```bash
+# Try to access protected endpoints without authentication
+curl http://localhost:8000/api/user/
+curl http://localhost:8000/api/research/?prompt=test
+curl http://localhost:8000/api/review/
+```
+**Expected**: All should return 401 Unauthorized
+
+#### Test 7: Protected Endpoints With Valid Auth
+```bash
+# First authenticate to get a token (use actual Google OAuth)
+# Then use the token:
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     http://localhost:8000/api/user/
+```
+**Expected**: Should return user data (200 OK)
+
+### 🔍 **Security Headers Tests**
+
+#### Test 8: Security Headers Present
+```bash
+# Check that security headers are present
+curl -I http://localhost:8000/api/user/ \
+     -H "Authorization: Bearer YOUR_TOKEN"
+```
+**Expected Headers**:
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `X-XSS-Protection: 1; mode=block`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: geolocation=(), microphone=(), camera=()`
+
+### 🚨 **Malicious Request Detection**
+
+#### Test 9: XSS Attack Prevention
+```bash
+# Try XSS attacks
+curl "http://localhost:8000/api/user/?search=<script>alert(1)</script>" \
+     -H "Authorization: Bearer YOUR_TOKEN"
+```
+**Expected**: 403 Forbidden with "Access denied" message
+
+#### Test 10: SQL Injection Prevention
+```bash
+# Try SQL injection patterns
+curl "http://localhost:8000/api/user/?query=DROP%20TABLE%20users" \
+     -H "Authorization: Bearer YOUR_TOKEN"
+```
+**Expected**: 403 Forbidden with "Access denied" message
+
+#### Test 11: Path Traversal Prevention
+```bash
+# Try path traversal
+curl "http://localhost:8000/api/user/../admin/" \
+     -H "Authorization: Bearer YOUR_TOKEN"
+```
+**Expected**: 403 Forbidden with "Access denied" message
+
+## Browser Testing
+
+### Test 12: Frontend Integration
+1. **Open browser dev tools**
+2. **Navigate to your frontend application**
+3. **Attempt Google OAuth login**
+4. **Check Network tab** for:
+   - Proper security headers in responses
+   - Rate limiting behavior (if testing multiple requests)
+   - Authentication token handling
+
+### Test 13: Token Expiration
+1. **Login successfully** and get short-lived tokens
+2. **Wait 1+ hours** (access token expires)
+3. **Try to access protected resources**
+4. **Expected**: Should get 401, frontend should refresh token automatically
+
+## Automated Security Scan
+
+### Test 14: Run Security Checklist
+```bash
+# Run Django security check
+python manage.py check --deploy
+
+# Check for common security issues
+python manage.py collectstatic --noinput
+python manage.py check --tag security
+```
+
+## Performance Testing
+
+### Test 15: Security Overhead
+```bash
+# Time requests to measure security middleware overhead
+time curl http://localhost:8000/api/user/ \
+     -H "Authorization: Bearer YOUR_TOKEN"
+```
+**Expected**: Response time should be reasonable (< 100ms typically)
+
+## Logging Verification
+
+### Test 16: Security Event Logging
+1. **Check Django logs** for security events:
+```bash
+tail -f /path/to/django.log | grep -E "(WARNING|ERROR)"
+```
+
+2. **Trigger security events**:
+   - Failed authentication attempts
+   - Rate limiting violations  
+   - Malicious request patterns
+
+3. **Expected Log Entries**:
+   - `Google auth attempt without credential from IP: X.X.X.X`
+   - `Suspicious request detected from X.X.X.X: /malicious/path`
+   - `Google Workspace verification failed for email: user@domain.com`
+
+## Environment-Specific Tests
+
+### Development Environment
+- DEBUG = True
+- Relaxed security for testing
+- Local Redis for rate limiting
+
+### Production Environment  
+- DEBUG = False
+- All security headers enforced
+- HTTPS required for secure cookies
+- Production Redis/database
+
+## Test Results Checklist
+
+Use this checklist to verify all security measures:
+
+- [ ] Personal emails blocked in Google OAuth
+- [ ] Non-Google Workspace domains blocked  
+- [ ] Rate limiting working on auth endpoints
+- [ ] Rate limiting working on API endpoints
+- [ ] All protected endpoints require authentication
+- [ ] Security headers present in all responses
+- [ ] XSS attacks blocked by middleware
+- [ ] SQL injection attempts blocked
+- [ ] Path traversal attempts blocked
+- [ ] Token expiration handled correctly
+- [ ] Security events properly logged
+- [ ] Performance impact acceptable
+
+## Troubleshooting
+
+### Common Issues
+
+**Rate Limiting Not Working:**
+- Check Redis connection: `redis-cli ping`
+- Verify CACHES setting in Django
+- Clear cache: `python manage.py shell -c "from django.core.cache import cache; cache.clear()"`
+
+**Google OAuth Tests Failing:**
+- Set `GOOGLE_OAUTH_CLIENT_ID` environment variable
+- Use valid Google OAuth client ID for testing
+- Mock the Google verification in tests
+
+**Security Headers Missing:**
+- Check middleware order in settings
+- Verify SecurityMiddleware is loaded
+- Test with authenticated requests
+
+**Tests Timing Out:**
+- Increase test timeout settings
+- Check database connections
+- Verify external API availability (if any)
+
+## Security Monitoring
+
+For ongoing security monitoring, set up:
+
+1. **Log Aggregation**: Collect security logs centrally
+2. **Alerting**: Alert on suspicious patterns or rate limit violations
+3. **Metrics**: Track authentication success/failure rates
+4. **Regular Testing**: Run security tests in CI/CD pipeline
+
+Remember: Security is an ongoing process. Regularly review and test these measures! 
