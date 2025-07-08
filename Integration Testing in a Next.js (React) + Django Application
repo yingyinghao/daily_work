@@ -1,0 +1,249 @@
+To create integration tests for your Next.js frontend and Django backend running
+Integration Testing in a Next.js (React) + Django Application
+
+Integration testing ensures that your Next.js frontend and Django backend work together correctly as a whole. In practice, this often means end-to-end (E2E) tests that simulate real user flows – for example, loading the React app in a browser, performing actions (clicks, form entries), and verifying that the Django API receives those requests and responds appropriately ￼. This guide will walk you through recommended tools, project setup (with Docker), environment configuration, test execution steps, handling external services, example test cases, and best practices for maintainable integration tests.
+
+Tools for Integration Testing (Next.js + Django)
+
+There are several tools you can use for integration or end-to-end testing in this tech stack. The best choice depends on whether you want to automate a real browser (to test the actual UI) or simply test the request/response cycle at the API level. Here are some commonly used options:
+	•	Playwright: A modern E2E testing framework that can automate Chromium, Firefox, and WebKit browsers. Playwright is powerful for full browser-based testing; you can write tests in JavaScript/TypeScript (Node.js) or even Python. It integrates well with Next.js ￼ and supports headless mode (for CI) as well as headed mode for debugging. Playwright offers features like auto-waiting, network request interception, and the ability to run tests against a production build of your app (which is recommended for realistic scenarios ￼).
+	•	Cypress: Another popular E2E testing tool, focused on frontend testing in the browser. Cypress runs tests in a real browser (Electron or headless Chrome/Firefox) and provides an interactive runner for debugging. It has a rich ecosystem and a simple API (using cy commands). Cypress can be great for testing user flows in your Next.js app and verifying the Django API calls. It also easily stubs network requests if needed (e.g., cy.intercept to mock external API calls). Cypress is often used in CI and can be containerized (there are official Cypress Docker images) ￼ ￼.
+	•	Postman/Newman: If your goal is to test the HTTP interaction between frontend and backend (without necessarily running a browser UI), you can use Postman to craft integration test suites for your API. For example, you might write a collection of requests (login, then get data, etc.) with assertions on responses. Using Newman (Postman’s CLI runner), these tests can run in CI. This is useful for pure API integration tests or backend contract tests, but note that this won’t execute your actual React code – it tests the API endpoints directly. Postman tests can complement browser-based tests by verifying the backend logic in isolation.
+	•	Pytest (Django): On the backend side, you can write integration tests using Pytest (with pytest-django or Django’s test framework). These tests can call the Django REST API (e.g., using Django’s test client or requests) and verify database state, similar to how a frontend would use the API ￼ ￼. Pytest is excellent for backend integration tests (ensuring your Django views, models, and database work together). However, pure Python tests won’t load your Next.js frontend. You could still use Pytest for end-to-end tests by combining it with browser automation (e.g., using Playwright’s Python library or Selenium WebDriver), but that adds complexity. Often, teams use Pytest for backend logic and use a tool like Playwright/Cypress for full-stack browser tests.
+	•	Others: There are other tools like Selenium/WebDriver (an older approach to browser automation), or Puppeteer (Node library for controlling Chrome). These can be used but are generally less convenient than Playwright or Cypress for modern apps. Next.js also supports Jest and React Testing Library for unit/component tests (which are important but are not full integration tests involving the Django backend).
+
+Choosing a tool: If you want to test real user interactions and the end-to-end flow, browser-based E2E tests (Playwright or Cypress) are recommended. They will catch issues in how the frontend calls the backend (e.g., incorrect API routes, CORS issues, authentication flow) by actually running the app in a browser. If you only need to test the API integration (without rendering the UI), Pytest or Postman tests can suffice, but they won’t cover the GUI. Many projects use a combination: e.g., use Pytest for detailed backend integration tests (fast and headless) and use Playwright/Cypress for high-level user journey tests.
+
+Project Structure and Configuration for Integration Testing (Docker Setup)
+
+When using Docker, it’s important to set up your project so that the frontend, backend, and test runner can all work together in a test environment. A typical structure might be:
+
+project/
+├── frontend/              # Next.js app (React)
+│   ├── Dockerfile         # Containerize Next.js app
+│   ├── pages/, components/, etc.
+│   └── tests/ or cypress/ # Integration tests for frontend (if using JS-based tests)
+├── backend/               # Django project
+│   ├── Dockerfile         # Containerize Django app
+│   └── tests/             # Integration tests for backend (if using Pytest for APIs)
+├── docker-compose.yml     # Base Compose file for app services (frontend, backend, db, etc.)
+├── docker-compose.test.yml# Compose overlay for tests (additional services or env)
+└── ...
+
+Some key points for structuring and configuring the integration test setup:
+	•	Docker Compose for Multi-Service Testing: Use Docker Compose to define your services. In the base docker-compose.yml, you might have services for the Django backend, the Next.js frontend, and perhaps a database (e.g., Postgres) and other dependencies (Redis, etc. if needed). For example, you might have a service named backend for Django and frontend for Next.js. Ensure that the frontend can reach the backend – typically, Compose sets up an internal network and you can refer to the Django service by its name (e.g., http://backend:8000). In your Next.js code or environment, the API base URL should be configurable so that in Docker it points to backend service, but in development it might point to localhost. Often, this is done via environment variables.
+	•	Environment Variables for Service URLs: Next.js can use environment variables (with a prefix like NEXT_PUBLIC_) to embed runtime configuration. For instance, you might define NEXT_PUBLIC_API_URL or similar to tell the frontend where the Django API lives. In your docker-compose.yml, set this for the frontend service. For example, you can pass NEXT_PUBLIC_BACKEND_HOST=http://localhost:8000 for local dev, and override it to http://backend:8000 in a Docker network. In Johnny Metz’s example, the docker-compose file explicitly sets an env var for the frontend container:
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    ...
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND_HOST=http://localhost:8000
+    ...
+
+This tells the Next.js app (running on port 3000) to call the backend at http://localhost:8000 (when accessed from the host machine) ￼ ￼. For Docker-in-Docker or compose usage, you’d instead point to http://backend:8000 (the service name) so that the frontend container reaches the backend container over the internal network ￼ ￼. Ensure that Django’s ALLOWED_HOSTS and CORS settings allow the frontend to connect (e.g., if Next.js is served on a different domain/port, Django should allow that origin or you configure a proxy).
+
+	•	Separate Compose File for Tests: It’s often convenient to create a separate Compose file (e.g., docker-compose.test.yml) that extends or overrides the base configuration for testing. In this file, you can add a service for your test runner and adjust settings for test mode. For example, when using Cypress in Docker, you might add a cypress service. In the test compose file, you could override the frontend’s environment variable to point at the backend’s internal name, and add the test service. For instance ￼ ￼:
+
+# docker-compose.test.yml
+services:
+  frontend:
+    environment:
+      - NEXT_PUBLIC_BACKEND_HOST=http://backend:8000   # point to backend service
+  cypress:
+    image: cypress/included:<version>                  # official Cypress image with all deps
+    volumes:
+      - ./frontend/cypress:/cypress                    # mount tests from frontend
+      - ./frontend/cypress.json:/cypress.json          # Cypress config
+    environment:
+      - CYPRESS_BASE_URL=http://frontend:3000          # base URL for the app
+      - CYPRESS_BACKEND_URL=http://backend:8000        # custom env for tests (if needed)
+    depends_on:
+      - frontend
+
+In this example, the cypress container will wait for the frontend to be up (due to depends_on) and then run the tests. CYPRESS_BASE_URL is a standard Cypress env that sets the URL for cy.visit() calls (so tests can just do cy.visit('/') and it knows the host) ￼ ￼. We also define a custom CYPRESS_BACKEND_URL which our tests (or custom Cypress commands) could use to directly talk to the backend – e.g. to seed or cleanup data via API calls ￼ ￼. The key difference in Docker is using service names instead of localhost for inter-container communication ￼.
+
+	•	Test Runner Service vs. Host: You have two approaches to run the tests:
+	1.	Run tests on the host machine: Spin up the backend, frontend (and other services) in Docker, but run your test runner (Playwright/Cypress) on your host. This is convenient for development – e.g., docker compose up -d to start everything, then run npx playwright test or npm run cypress:open on your machine. In this case, your front/back containers are accessible via localhost (since we mapped ports 3000 and 8000). Make sure to set environment variables so the test runner knows where to find the app. For example, set CYPRESS_BASE_URL=http://localhost:3000 and ensure the Next.js container uses localhost:8000 for API ￼. The diagram below shows this setup:
+Architecture when running Cypress tests on the host (outside of Docker). The Next.js frontend and Django backend run in Docker containers, while Cypress runs on the host machine. The Cypress tests execute actions in the browser against the frontend, which in turn calls the backend. A mechanism (such as a special API endpoint or an auxiliary “test utility” service) can be used to seed or reset the database before each test, to ensure test isolation. ￼
+	2.	Run tests inside Docker: This is more reproducible in CI. You include a service (or use a one-shot container) for the test runner. For example, the cypress service in the above docker-compose.test.yml will automatically execute cypress run when started (the default entrypoint of the cypress/included image is to run the tests). You can then invoke both compose files together:
+
+docker compose -f docker-compose.yml -f docker-compose.test.yml up --build --abort-on-container-exit
+
+The --abort-on-container-exit flag will shut down all containers once the test container finishes (so the stack doesn’t keep running after tests) ￼. In this mode, everything runs in containers on the same network. The diagram below illustrates this setup:
+Architecture when running Cypress (or Playwright) tests inside Docker. Here, the Cypress test runner itself is containerized. It executes browser actions against the frontend container, which calls the backend container. The test container can directly reach other services (e.g., for seeding data) over the Docker network. ￼ ￼
+
+	•	Django Test Settings: For integration tests, you might want a separate Django settings module (e.g., settings_test.py). In it, you can configure a separate database (to avoid clobbering dev data) – e.g., use an in-memory SQLite for speed, or a dedicated test database on the DB server ￼. If using SQLite and the Django dev server for tests, be aware of concurrency issues (the dev server might default to single-threaded with SQLite) ￼ ￼. In a Docker setup, often you’ll just use the same DB container but a fresh database that you migrate at test startup. Ensure that tests use isolated data – you can have the tests run manage.py migrate on a blank schema or use Django’s test runner which does that automatically if you invoke tests via manage.py test. In an E2E scenario, since we are running the server separately, you might manually handle DB migration/reset.
+	•	Organizing Test Code: Keep your integration tests separate from unit tests. For browser tests with Playwright, a common convention is to have a tests/e2e/ directory (and a Playwright config file). For Cypress, use the cypress/integration/ (for older Cypress versions) or cypress/e2e/ (for Cypress v10+) directory inside your frontend project. If using Pytest for API tests, you might place them in backend/tests/integration/ and mark them accordingly. This separation allows running unit tests vs integration tests independently (since integration tests are slower and require the whole stack up).
+	•	CI Configuration: In CI (e.g., GitHub Actions, GitLab CI, etc.), you can use Docker Compose similarly to spin up services and run tests. For example, in GitLab CI one might use a docker:dind service and run the compose commands as in the example by Brian Caffey ￼ ￼. The typical stages are: build images, start services, seed the database, run tests, then tear down ￼. You can collect artifacts like screenshots or videos on failure (Cypress does this by default in headless mode, Playwright can be configured to do so as well). Make sure the CI environment has the necessary environment variables (like any secrets or service URLs) configured for the test stage.
+
+Steps to Spin Up a Test Environment
+
+Now, let’s outline the process of setting up and running the integration tests. This assumes you have Dockerized your app and perhaps written some tests already:
+	1.	Build the Application Containers: Make sure you have up-to-date Docker images for your frontend and backend (and any services). For example, docker compose build (or the CI will build them). This ensures the code under test is the latest.
+	2.	Bring Up the Services (Deploy the Test Stack): Start the backend, database, and frontend in a known state. Typically: docker compose up -d (for local dev) or docker compose -f docker-compose.yml -f docker-compose.test.yml up -d if using a test-specific compose overlay. This will start the Django app (listening on some port, e.g. 8000) and the Next.js app (maybe on 3000). If Next.js requires building (production build), ensure that’s done either in the Dockerfile or as a separate step (npm run build). Many CI setups will build the Next.js app ahead of running it for tests to mirror production.
+	3.	Wait for Services to be Ready: Ensure the backend and frontend are fully started before running tests. You can do this manually (check logs or open the site in a browser) or script it. For example, one can use a small script to poll an endpoint. In one example CI snippet, they used httping to wait for the frontend to respond on /login before proceeding ￼. Playwright offers a config option to automatically launch a dev server and wait (webServer in playwright.config). If not using such features, simply put a short delay or polling loop. Tip: expose a simple health-check endpoint in Django (or reuse something like /api/health/) that you can curl to confirm the backend is up.
+	4.	Run Database Migrations (and Seed Data): In a fresh test environment, you’ll likely need to apply migrations. You can do: docker compose exec backend python manage.py migrate --noinput. This sets up the schema. Next, if your tests require certain data (e.g., a test user account, or lookup tables), you have a few options:
+	•	Pre-load static data via fixtures or migrations. For example, you could have a Django fixture JSON or a custom management command that creates an admin/test user. Run manage.py loaddata testdata.json or manage.py create_test_users.
+	•	Use factory scripts: You can write a small Python script or Django command that uses Factory Boy or Django ORM to create necessary objects. This can be invoked at this stage.
+	•	Use the test runner or framework to create data on the fly. For instance, in Cypress, you might call backend APIs to set up state before the UI test runs. Cypress allows making HTTP requests within tests (e.g., cy.request() to create a user via API instead of through the UI).
+	•	Some E2E setups include a “reset” or “seed” endpoint on the backend that is only enabled in testing. For example, an endpoint that clears the database or inserts fixtures when hit. If you implement this, guard it carefully (only enable in a debug/testing mode) so it’s not available in production. Hitting such an endpoint at the start of each test (or suite) can ensure a consistent state. As Simon Willison notes, having a DRF endpoint to reset the DB is a viable approach in integration testing ￼.
+	•	Another approach is to run an auxiliary service that can execute setup commands. For instance, one Reddit user described running a small Flask/Django container whose sole job is to execute management commands when triggered, so tests can call that service to reset data ￼ ￼. This avoids putting dangerous endpoints in the main app and is only active during tests.
+Choose the approach that fits your needs. For simplicity, let’s say we ensure a test user exists for the login flow tests. We could achieve that by running a management command here to create a user with known credentials, or by including code in Django’s startup that creates a default user in debug/test mode.
+	5.	Run the Integration Tests: Now execute the test suite:
+	•	If using Cypress on host: Run npm run cypress:run (which should be configured to use baseUrl as the frontend URL). Ensure environment vars like CYPRESS_BASE_URL are set (e.g., http://localhost:3000) ￼. Cypress will launch, run all spec files, and report results. In headed mode (for debugging), you might do npm run cypress:open to watch the tests in a browser.
+	•	If using Playwright (Node) on host: You can use npx playwright test. If you configured the playwright.config.ts with a baseURL and a webServer to auto-start the Next.js app, Playwright might handle launching the dev server for you. If not, ensure the app is already running (as above). Playwright will run tests (likely found in tests/ directory) in headless browsers by default. You can use options like --headed for debugging, or view the HTML reports it generates after.
+	•	If using a test container (Cypress or Playwright): The container will likely run the tests immediately upon starting (as with the cypress/included image example). In that case, you might simply attach to its logs. For instance, docker compose -f docker-compose.yml -f docker-compose.test.yml up --abort-on-container-exit will start everything and then stop when tests are done. Check the exit code of the test container to determine success/failure in CI. The logs will show which tests passed or failed.
+	•	If using Postman/Newman: Ensure the services are up (steps 1-3), then run Newman with your Postman collection and environment files. For example: newman run collection.json -e local.env.json. This will execute the predefined requests (login, etc.) against your running API and output results. You’d script this in CI similar to running a unit test runner.
+	•	If using Pytest (for API tests): You might not need the frontend at all for those tests. You could directly use pytest with Django’s test framework. Often, in that case, you wouldn’t run the Django server in Docker; instead, pytest uses Django’s testing tools to spin up a test database and call views. However, if you want to hit the Dockerized app from pytest, you could treat it like an external service (similar to how Newman would). For instance, use requests in pytest to call http://localhost:8000/api/... and assert responses. This is more of an API test than a full E2E.
+	6.	Examine Results and Tear Down: If tests pass, great! If not, inspect the failure. Both Cypress and Playwright will capture screenshots on failure by default. They may also save videos of the run (Cypress does if configured or by default in headless mode ￼ ￼). These artifacts are invaluable for debugging. In a Docker scenario, you might volume-mount an output directory or use CI artifact collection to retrieve these. After the run, bring down the Docker services to free resources: docker compose down -v (the -v will remove volumes, e.g., wipe the test database volume if you want a fresh state next time).
+
+By following the above steps, you create a repeatable environment for integration tests that closely mirrors production (especially if you use the same Docker images you deploy). The use of Docker Compose ensures that the frontend and backend are connected via stable hostnames and that tests can target them reliably.
+
+Handling External Services in Integration Tests
+
+Web apps often depend on external services (third-party APIs, OAuth providers, payment gateways, etc.). In integration tests, you typically do not want to call real external services – calls might be slow, flaky, cost money, or require credentials. Instead, you should simulate or mock those interactions.
+
+Here are strategies for mocking external services in a Next.js + Django context:
+	•	Use a Mock Server: Tools like MockServer can run as a lightweight server that returns predefined responses ￼ ￼. You can run a MockServer Docker container during tests to simulate external APIs. For example, if your Django app calls an external REST API, point the base URL to the MockServer’s URL in the test environment. Configure MockServer with expected request patterns and sample responses ￼ ￼. This way, when the Django code tries to call the third party, it hits MockServer and gets a deterministic response. This approach tests the full integration (Django actually makes an HTTP call) but without leaving your test environment.
+	•	Monkeypatch or Stub Calls (Backend): In Django tests (if you run them in-process with Pytest), you can monkeypatch the function that calls the external service. For example, if you have a function fetch_payment_status() that calls an API, in your test you can patch it to return a canned response. Python’s unittest.mock library or Pytest’s monkeypatch fixture can do this. However, for full-stack integration where Django is running as a server, monkeypatching is not straightforward (since the server is a separate process). In those cases, prefer a Mock server or dependency injection via settings. For instance, you could have a Django setting USE_FAKE_PAYMENT_SERVICE=True that, when true, causes your code to use a dummy implementation or a local endpoint. During tests, enable that setting.
+	•	Intercept Network Calls (Frontend): If the Next.js frontend makes direct calls to external services (for example, calling a third-party API from the browser, which is less common), testing that can be handled with your E2E tool. Cypress allows you to intercept calls with cy.intercept() to stub the response or prevent the real call. Playwright has similar network interception (page.route() to define mock responses). For example, in a test you can intercept requests to https://maps.googleapis.com/* and respond with a fixture JSON, preventing the actual HTTP request. This keeps the test fast and offline.
+	•	Use Sandbox/Test Modes: Some external services provide sandbox environments or test API keys (e.g., Stripe, PayPal, etc.). In tests, use those credentials so that even if the code calls out, it’s hitting a safe environment. This isn’t exactly a mock, but it ensures no real transactions occur. Still, these calls can slow tests down and introduce flakiness, so stubbing is usually preferred if possible.
+	•	Dummy Services in Docker: For a truly integrated test, you can spin up your own fake version of a service. For example, if your app needs a SMTP server to send emails (and you want to verify an email was “sent”), you could run a dummy SMTP capture server (like MailHog or Papercut) in your compose. Django can be configured in tests to use that SMTP. Then your test can check the MailHog API to see if an email was received. Similarly, for something like OAuth, you could set up a fake OAuth provider that always authorizes a user. This approach requires more setup but can test the full flow.
+	•	Resetting Mocks: If you use an intercept or a MockServer, ensure that you reset its state between tests if necessary. For instance, clear any stored requests in MockServer or reset Cypress intercepts (Cypress automatically restores default behavior between tests for cy.intercept unless you use preserveOnce or similar features).
+
+In summary, identify all external dependencies in your app and decide how to handle each in tests. The goal is that tests run in a self-contained environment. If a dependency is not critical to the integration test’s purpose, it’s a good candidate to mock out. For example, if you’re testing a “user sign-up” flow that normally sends a confirmation email via an external service, your integration test can simulate the email success without actually sending one – e.g., have Django use the console or file email backend during tests and assert that an email was “created” in the log or file.
+
+Best Practice: Keep the logic that calls external services abstracted so you can swap implementations. For instance, use interfaces or settings so that in production it uses real API calls, but in testing it uses a dummy. This way, your integration test can still exercise the overall flow (e.g., order creation triggers a “payment processed” event) without actually contacting the external system.
+
+Example Integration Test Scenarios
+
+Let’s walk through a couple of concrete example test cases: a user login flow and a form submission. We’ll assume we are using Cypress for these examples (the syntax is similar in Playwright, just structured differently). The same scenarios can be tested with any tool; the key is what we’re verifying.
+
+1. User Login Flow (Next.js + Django)
+
+Scenario: The user navigates to the login page, fills in their username and password, submits the form, and gets logged into the application. On success, they should see their dashboard page with a welcome message (and presumably, a session cookie or token is set by the Django backend).
+
+Preconditions: We have a test user in the database (username: testuser, password: correcthorsebatterystaple). This user can be created via a fixture or a setup step before the test (e.g., using a Django management command or an API call as discussed). Also, ensure that in the test environment, Django’s email verification or other post-login steps are disabled or handled (so that a login attempt doesn’t require an email confirmation unless you plan to simulate that too).
+
+Test steps and assertions (using Cypress as an example):
+
+// cypress/e2e/login.spec.js
+describe('Login Flow', () => {
+  it('allows an existing user to log in and see the dashboard', () => {
+    // Visit the Next.js login page
+    cy.visit('/login');  // baseUrl is set to frontend URL, e.g., http://localhost:3000
+    
+    // Fill in login form
+    cy.get('input[name="username"]').type('testuser');
+    cy.get('input[name="password"]').type('correcthorsebatterystaple');
+    cy.get('button[type="submit"]').click();
+    
+    // Backend should authenticate and redirect to dashboard
+    cy.url().should('include', '/dashboard');
+    
+    // Verify that a welcome message or user-specific element is visible
+    cy.contains('Welcome, testuser').should('be.visible');
+    
+    // (Optional) Verify cookie or localstorage has auth token if your app uses them
+    // cy.getCookie('sessionid').should('exist');
+  });
+});
+
+In this test, Cypress opens the /login page in a browser, which triggers the Next.js app. When the form is submitted, the React app likely sends an AJAX request (e.g., via fetch or Axios) to the Django REST API at /api/login/ (for instance). Django processes it and returns a success (200 OK + token or sets a session cookie). The frontend then changes route to /dashboard. The test observes the URL change and checks for a welcome message, confirming the end-to-end flow succeeded.
+
+Notes:
+	•	If your login flow uses redirection (e.g., Next.js sends form to a Django template view), adapt accordingly (you might need to handle a full page navigation).
+	•	You may need to handle CSRF tokens if your setup has CSRF protection. In a typical REST login, you might disable CSRF for the API or acquire a token beforehand. In testing, you can configure Django to disable CSRF in test mode or have Cypress fetch the token from a cookie/meta tag and include it. This is a one-time setup detail.
+	•	After login, if subsequent tests in the suite require an authenticated user, you could reuse the session. However, it’s often better to log in via the UI (as above) for each test that needs it, to ensure independence. Alternatively, use an API call to log in and set the cookie in the browser before visiting a page (Cypress allows setting cookies or localStorage directly).
+
+2. Form Submission and Data Persistence
+
+Scenario: Suppose the app has a form for creating a new item (for example, a “Create Post” form on a blog). The user fills out the form and submits, the frontend sends a POST request to the Django API to create the resource, and on success, the frontend shows the new post in the list.
+
+Preconditions: The user is logged in (the test can perform a login first, or perhaps this is a part of a larger test where the login was already done). The backend has an endpoint (e.g., POST /api/posts/) that requires authentication and creates a post in the database.
+
+Test steps and assertions (using Playwright as an example this time):
+
+// tests/createPost.spec.ts (Playwright example)
+import { test, expect } from '@playwright/test';
+
+test('authenticated user can submit a new post via the form', async ({ page }) => {
+  // Log in via UI or API
+  await page.goto('http://localhost:3000/login');
+  await page.fill('input[name="username"]', 'testuser');
+  await page.fill('input[name="password"]', 'correcthorsebatterystaple');
+  await page.click('button[type="submit"]');
+  await page.waitForURL('http://localhost:3000/dashboard');
+  
+  // Navigate to "New Post" page
+  await page.click('a[href="/posts/new"]');  // assume a link to new post form
+  await expect(page).toHaveURL(/\/posts\/new$/);
+  
+  // Fill out the new post form
+  await page.fill('input[name="title"]', 'My First Post');
+  await page.fill('textarea[name="content"]', 'Hello World!');
+  await page.click('button[type="submit"]');
+  
+  // Wait for redirect to posts list or post detail page
+  await page.waitForURL('http://localhost:3000/posts');
+  
+  // Verify that the new post appears
+  await expect(page.locator('.post-title').first()).toHaveText('My First Post');
+});
+
+In this Playwright test, we perform a login (same as the previous scenario), then navigate to the post creation page, fill the form, and submit. We then expect either a redirect or some update on the page. Here I assumed it redirects to a list of posts. We check that the newly created post’s title is visible in the list. This confirms that the frontend successfully sent the request and updated its state/UI based on the backend response.
+
+Notes:
+	•	We included the login steps in this test for completeness. In practice, you might factor out the login into a helper (or use a test fixture). For example, with Playwright you could use the APIRequestContext to directly call the login API and set a cookie, bypassing the UI for speed. Cypress can do something similar with cy.request and then setting window.localStorage or cookies. But doing it through the UI is truest to end-user behavior (at the cost of some extra test time).
+	•	After form submission, ensure the test waits for the outcome. We used waitForURL and then a check on the page content. Another approach is to wait for a success message element to appear (if your app shows “Post created!” notification, etc.). Always wait for some observable outcome of the submission (network idle, DOM change, URL change) to avoid racing ahead of the app’s state.
+	•	We verify the new data via the UI. If you want to double-check the backend, you could also query the database (in a backend integration test) or hit the API directly. But an end-to-end test typically trusts that if the UI shows it, the whole system worked. If the logic is critical, an additional API-level test could verify the database state.
+
+Additional Test Case Ideas:
+	•	Navigation and Protected Routes: Test that a non-logged-in user trying to access a protected page is redirected to /login. After login, they might be redirected back. This ensures your frontend routing and backend auth work together (and that Django’s auth status is correctly conveyed to the frontend, perhaps via a 401 status that the frontend handles).
+	•	Registration Flow: User signs up on frontend, Django creates account, perhaps sends email – for the test, you might intercept the email or use a fake email backend, then directly verify the user can log in.
+	•	API Error Handling: Simulate an error from Django (e.g., force a 500 or have the API return a 400 validation error by submitting bad data) and ensure the frontend displays an error message. You can write tests that intentionally send invalid input to see how the system behaves end-to-end.
+	•	Third-party Login (OAuth) Flow: If using something like social login (OAuth), you might not do a full OAuth dance in a test, but you could mock it. For example, your Django might have a callback endpoint that in test mode you can hit directly with a token. Or if using Cypress, stub out the OAuth popup. This gets complicated, so often such flows are tested partially (ensuring our app responds correctly given a success or failure from the provider, without actually contacting the provider).
+	•	Concurrent interactions: Though full concurrency is hard to test deterministically, you might simulate two different users (two browsers) if using Playwright’s multi-context or Cypress tasks. This can test things like real-time features (if applicable) or just that user A’s action doesn’t interfere with user B.
+
+Each test case should clean up after itself if it creates persistent data. For example, if a “create post” test runs, it added a post to the DB. If you run tests on a transient test database that is destroyed after the suite, you might not need per-test cleanup. But if you reuse the database between tests, consider cleaning up (e.g., delete the post via API or wipe the DB after each test). Some test setups use a global DB reset between tests: for instance, one could call a Django flush command after each Cypress spec using an after-hook (e.g., send a request to that admin endpoint to clear data). This ensures isolation but can slow tests down. Balance test isolation with runtime – often having a known clean state at start of each test file is enough.
+
+Best Practices for Maintainable & Reliable Integration Tests
+
+Writing integration tests is one thing; keeping them maintainable and not flaky over time is another challenge. Here are best practices to help:
+	•	Test in a Production-like Environment: Run your frontend in production mode (optimized build) and your backend with realistic settings (e.g., use the same database type you use in prod). This catches issues that don’t appear in dev mode. For example, Next.js in development uses a different server that might hide certain issues – running against the production build is more accurate ￼.
+	•	Isolate Test Data: Ensure each test can run independently. The easiest way is to start each test run with a fresh database (Docker makes it easy – e.g., start a new DB container or use docker-compose down -v to remove volumes between runs). If tests share state, one test’s data could pollute another (causing flakiness). If a full reset between each individual test is too slow, at least reset between test suites or have deterministic data creation. For example, if tests create users or posts, use unique identifiers (like username “testuser1”, “testuser2” in different tests) to avoid collisions. When possible, use factory libraries to generate data objects with random but controlled data (Factory Boy for Django, or just custom functions that create via API) ￼ ￼.
+	•	Seed/Reset the System State as needed: As discussed, consider implementing an easy way to reset state. This could be an API endpoint available only in testing that wipes and reseeds the database. Hitting this at the start of each test (or suite) can give consistent baseline. It’s a trade-off between test isolation and performance. Many teams reset once per test suite (e.g., truncate all tables before the E2E test suite starts). If using an external service in tests (like a mock server or dummy DB), ensure that is also reset. For instance, clear the MockServer expectations or restart it to a clean slate if test behavior depends on call counts, etc.
+	•	Use Descriptive Test Names and Structure: Integration tests can be complex, so name them clearly to describe the user story or scenario. For example, it("displays an error for wrong password") is better than it("login failure"). Use Mocha/Jest describe blocks or Pytest class/func naming to group related scenarios. This makes it easier to identify failures and maintain tests ￼. Also separate different scenarios into different tests rather than one giant test – e.g., a test for successful login and another for login with wrong credentials (each should verify different outcomes) ￼.
+	•	Avoid Hard-Coding Waits: Flaky tests often come from timing issues. Don’t use fixed sleep calls to wait for things, as they can make tests slow or fail under load. Instead, rely on built-in retries and waits: e.g., Cypress automatically waits for elements to appear; use cy.contains(...).should('be.visible') which will retry until timeout. Playwright has auto-wait for most actions and assertions. You can also increase timeouts for certain actions if an operation is known to be slow (like image upload). The example above showed enabling retries in Cypress run mode to reduce flakiness ￼ – this can rerun a failed test automatically to see if it passes on a second go, but ideally you fix the flakiness at the source. Use your test framework’s features (like Cypress’s .should assertions or Playwright’s expect() with eventual checks) to synchronize with the app’s state rather than manual waits.
+	•	Use Selectors Resilient to UI Changes: Your frontend will evolve, but tests shouldn’t break with every minor DOM change. Prefer to select elements by stable identifiers: e.g., add data-testid attributes in your React components for testing purposes. This decouples tests from UI structure. For example, cy.get('[data-testid="login-button"]') is clearer and more robust than a complex CSS selector that might break if the DOM hierarchy changes. Similarly, avoid depending on text content that might change unless you’re explicitly testing that content. Many test failures come from minor text or layout tweaks that don’t actually indicate a broken feature.
+	•	Modularize and Reuse Test Code: Integration tests can have repeated actions (logins, form fills, etc.). Use the features of your test framework to DRY (Don’t Repeat Yourself) out common flows:
+	•	In Cypress, you can define custom commands (e.g., Cypress.Commands.add('login', ...)) that perform login via API or UI and call them in tests ￼.
+	•	In Playwright, you can use the concept of fixtures or write helper functions. You could even abstract a “Page Object” – e.g., a class with methods like loginPage.loginAs(user, pass).
+	•	This makes tests shorter and easier to update when something changes (e.g., if the login process changes, you update the one command/function rather than every test).
+	•	Parallelize tests if possible: Modern test runners can run tests in parallel (Cypress can split tests across multiple processes; Playwright can launch multiple workers). If your CI allows it, running different spec files in parallel can greatly speed up E2E test execution. You’ll need to ensure the app can handle multiple simultaneous test users (usually fine) and possibly give each parallel run a separate database or user set to avoid collisions. Another approach is to spin up separate instances of the application for each test process (which is heavier). Start with sequential tests and gradually introduce parallelism once stability is confirmed.
+	•	Run Integration Tests in CI at appropriate times: Because these tests are slower, you might not run them on every single commit (especially if your suite grows large). Some teams run a smoke subset on each commit and the full suite nightly or on a merge to main. Decide what’s best for your velocity. But do run them regularly to catch regressions. It’s also good to run them in a staging environment that mirrors production (for instance, after deploying to a staging server, run the tests against that deployment).
+	•	Monitoring and Debugging Failures: Make it easy to debug when a test fails. Some tips:
+	•	Take screenshots on failure (Cypress and Playwright do this automatically). Review those in CI artifacts to see what the UI looked like.
+	•	Use logs: Both frontend and backend logs can be helpful. You might configure the Django logger to output to console (so docker compose logs backend in CI artifact might show an error traceback during a test). In Next.js, you could capture browser console logs in Playwright (page.on('console', ...)) or let Cypress log XHRs. On failure, having those logs can pinpoint if the frontend got a 500 error or similar.
+	•	Use test runner’s debug tools: e.g., run a failing Cypress test with cypress open to step through it, or use Playwright’s .debug() or headed mode with Playwright Inspector. This way, you can replicate the failure locally with the same data.
+	•	Continuous Maintenance: As features change, update tests promptly. Treat test code as first-class code. Refactor it when the application architecture changes. Keep an eye on test runtime – if certain tests are consistently slow, optimize them or consider if they’re doing too much. For reliability, occasionally introduce artificial failures to ensure tests catch them (e.g., if you change an API response and forget to update the frontend, the tests should fail – if they didn’t, perhaps the coverage is insufficient).
+
+Finally, be mindful of the testing pyramid – integration tests are high value but also high cost. Aim to have a solid base of unit tests (for isolated logic), a moderate layer of integration tests (for API endpoints and small component interactions), and a smaller layer of full end-to-end tests for critical user journeys. This ensures you get good coverage without an overly brittle test suite ￼ ￼. The integration tests we discussed straddle the top of the pyramid, so use them wisely for the most important flows (login, CRUD operations, transactions, etc., that involve multiple systems).
+
+By following these guidelines and using the tools effectively, you can achieve a robust integration testing setup for your Next.js + Django application. This will give you confidence that the frontend and backend are working harmoniously – catching issues like mismatched data contracts, broken auth flows, CORS misconfigurations, or regressions in user experience before they hit production. Happy testing!
+
+Sources:
+	•	Next.js Documentation – Testing: Playwright (E2E Testing) ￼ ￼
+	•	Johnny Metz – Dockerize your Cypress tests (example of Next.js + Django with Cypress and Docker) ￼ ￼ ￼
+	•	Brian Caffey – Integration testing with Cypress in Django/Vue (GitLab CI example) ￼ ￼
+	•	Reddit – Discussion on E2E testing with React (Next.js) and Django REST, tips on DB reset strategies ￼ ￼
+	•	Python in Plain English – Integration Testing Django REST APIs (best practices and examples) ￼ ￼
+	•	Others as cited inline (MockServer for mocking externals ￼ ￼, etc.)
